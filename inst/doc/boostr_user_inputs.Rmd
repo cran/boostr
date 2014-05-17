@@ -1,0 +1,263 @@
+---
+title: "Estimation Procedures, Reweighters, Aggregators, and Performance Analyzers"
+author: <a href="steven@pollackphoto.net">Steven Pollack</a> 
+date: May 16, 2014
+output: 
+  html_document:
+    toc: yes
+    theme: spacelab
+---
+<!--
+%\VignetteEngine{knitr::knitr}
+%\VignetteIndexEntry{User Inputs} 
+-->
+Introduction
+=======
+
+An unfortunate reality about the `boostr` framework is that it's a bit jargon
+heavy. To take full advantage of the modularity behind `boostr` you'll want to
+understand the following terms: "estimation procedure", "reweighter", 
+"aggregator", and "performance analyzer". 
+
+This document will define each term and give examples. While the definitions stand on their own, certain examples will
+build off each other, so be warned!
+
+Estimation Procedures
+=======
+
+A few examples
+-----------
+
+At a high level, an *estimation procedure* is any black-box algorithm that learns from some data and spits out an *estimator* -- some function that can take data and return estimates. This may seem a bit convoluted, so lets look at two prototypical examples with <a href="#kNNExample">$k$-NN</a> and <a href="#svmExample">svm</a>.
+
+<div id="kNNExample">
+````{r, kNNExample, cache=FALSE}
+kNN_EstimationProcedure <- function(k, learningSet) {
+  learningInput <- learningSet[, -1]
+  learningResponse <- learningSet[, 1]
+  
+  function(newdata) {
+    class::knn(train = learningInput,
+               cl = learningResponse,
+               k = k,
+               test = newdata)  
+  }
+}
+
+library(mlbench)
+data(Glass)
+
+# train estimator on Glass dataset
+kNN_Estimator <- kNN_EstimationProcedure(5, Glass[,10:1])
+
+# predict first 10 observations of Glass data
+kNN_Estimator(Glass[1:10, 9:1])
+
+table(kNN_Estimator(Glass[1:10, 9:1]), Glass[1:10,10])
+````
+</div>
+<div id="svmExample">
+```{r, svmExample, cache=FALSE}
+svm_EstimationProcedure <- function(formula, cost, data) {
+  model <- e1071::svm(formula, cost=cost, data=data)  
+  function(newdata) {
+    predict(model, newdata=newdata)
+  }
+}
+
+# train estimator on Glass dataset
+svm_Estimator <- svm_EstimationProcedure(formula(Type ~ .), 100, Glass)
+
+# predict first 10 observations of Glass data
+svm_Estimator(Glass[1:10,-10])
+
+table(svm_Estimator(Glass[1:10,-10]), Glass[1:10,10])
+```
+</div>
+
+Now you may be thinking, "what's the big deal here?" `kNN_EstimationProcedure`
+is just a wrapper around `class::knn`. To that I would say, "keen eye, my 
+friend" -- I'll address that in a moment; however,  things get a bit more interesting with `svm_EstimationProcedure` where 
+we see that our function involves a "training" step -- the call to `e1071::svm` -- and then returns a function (a closure) that has access to the trained model, to perform prediction. Since an estimation procedure is supposed to be the thing that trains the model we want to make estimates from, it's very reasonable to consider `e1071::svm` an estimation procedure. However, it would be incorrect to consider `predict`, by itself an estimator. Really, the wrapper around `predict` that gives it access to the model built by `e1071::svm` is the estimator, since this is the object we use to generate estimates.
+
+Now, back to the <a href="#kNNExample">$k$-NN example</a>. How is this a demonstration of the *estimation procedure*-*estimator* setup we're trying to cultivate? Well, in this particular instance, the $k$-NN algorithm doesn't have a dedicated "training" step. The model built in the $k$-NN algorithm *is* the learning set. Thus, $k$-NN can skip the model building step we saw in the <a href="#svmExample">svm example</a> and go straight to the prediction step. Hence, our estimation procedure is just a wrapper around `class::knn` that makes sure we're using the learning set.
+
+Mathematical definition of an estimation procedure
+------------------
+
+For those of you who are more mathematically inclined, you can think of estimation procedures in the following way: suppose you had a learning set $\mathcal{L}_n = \left\{(x_1, y_1), \ldots, (x_n, y_n)\right\}$ of $n$ observations $(x_i, y_i)$ where $x_i \in \mathcal{X} \subseteq \mathbb{R}^{J}$ and $y_i \in \mathcal{Y} \subseteq \mathbb{R}$ and mapping, $\widehat{\Psi} : \mathcal{L}_n \to \left\{f \mid f : \mathcal{X} \to \mathcal{Y}\right\}$. We call $\widehat{\Psi}$ an *estimation procedure* and the function $\psi_n = \widehat{\Psi}(\mathcal{L}_n)$ an estimator. Note that since we're in the world of probability and statistics, the $x$'s and $y$'s are realizations of random variables, and so for a fixed $n$, your learning set, $\mathcal{L}_n$ is also a realization of a random object. Hence, the estimation procedure is actually a function on the space of learning sets. 
+
+Technicalities aside, the most profitable way of thinking about estimation procedures ($\widehat{\Psi}$) is that they are black-box algorithms that spit out functions ($\psi_n$) which can take predictors like $x_i$ and spit out predictions, $\hat{y}_i$. 
+
+Estimation procedures in `boostr`
+-------------------
+
+This is all well and good, but how does this apply to you, the `boostr` user? Well, `boostr` lets you use your own estimation procedures in `boostr::boost`. However, to do so, `boostr::boost` needs to make sure the object you're claiming to be an estimation procedure is, infact, an estimation procedure.
+
+A priori, `boostr` assumes that all estimation procedures:
+
+* have the signature equivalent to `(data, ...)` where `data` represents the learning set $\mathcal{L}_n$,
+* return a function with signature equivalent to `(newdata, ...)`, where `newdata` represents
+the $x$'s whose $y$'s are to be predicted, and
+* inherit from the class `estimationProcedure`.
+
+The last detail is just a minor detail; the first two requirements are more important. Basically, if you can rewrite the signature of your estimation procedure's signature to match `(data, ...)`, and it's output's signature to match `(newdata, ...)`, `boostr::boost` can Boost it. However, `boostr::boost` doesn't do this with black-magic, it needs to know information about your estimation procedure. Specifically, `boostr::boost` has an argument, `metadata`, 
+which is a named list of arguments to pass to `boostr` <a href="#helperFxns">Wrapper Generators</a> written for the express purpose of taking things like your estimation procedure, and creating objects whose signatures and output are compatible inside `boostr`.
+
+<div id="#helperFxns" align="center">
+```{r, helpFxnTable, echo=FALSE, cache=FALSE, results='asis'}
+helperFxns <- matrix(c("wrapProcedure", "buildEstimationProcedure", "wrapReweighter", "wrapAggregator", "WrapPerformanceAnalyzer"), ncol=1)
+colnames(helperFxns) <- "Wrapper Generators"
+
+helpFxnXTab <- xtable::xtable(helperFxns, caption="Table of `boostr`'s Wrapper Generators")
+
+print(helpFxnXTab, include.rownames=FALSE, type="html")
+```
+</div>
+
+For estimation procedures, the relevant Wrapper Generators are `boostr::wrapProcedure` and `boostr::buildEstimationProcedure` -- when `boostr::boost` calls them depends entire on the `x` argument to `boostr::boost`. Ignoring this caveat for a moment, let's consider what we would have to do turn `kNN_EstimationProcedure` in the <a href="#kNNExample">$k$-NN example</a> into a `boostr`-compatible estimation procedure. First, its signature is `(k, learningSet)`, so we'd want a wrapper `function(data, ...)` where `data` corresponds to `learningSet` and then have `...` take care of `k`. `boostr` can build this for you, if you include the entry `learningSet="learningInput"` in the `metadata` entry of `boostr::boost` and pass the value of `k` in as a named entry in `.procArgs` -- see <a href="#arcx4AndkNN">this example</a> where `kNN_EstimationProcedure` is boosted according to the arc-x4 algorithm. Since we're wrapping a whole procedure, and not a closure that combines the train-predict pattern (like in the <a href="#svmExample">svm example</a>), the `metadata` arguments we'll want to use are the arguments corresponding to `boostr::wrapProcedure`. See the help page for the details on `boostr::wrapProcedure`'s signature.
+
+<div id="#arcx4AndkNN">
+````{r, arcx4AndkNN, cache=FALSE}
+boostr::boostWithArcX4(x = kNN_EstimationProcedure,
+                       B = 3,
+                       data = Glass,
+                       metadata = list(learningSet="learningSet"),
+                       .procArgs = list(k=5),
+                       .boostBackendArgs = list(
+                         .subsetFormula=formula(Type~.))
+                       ) 
+```
+</div>
+
+Estimation procedures like `svm_EstimationProcedure` <a href="#svmExample">above</a>, are so common in `R`, `boostr` implements a Wrapper Generator, `boostr::buildEstimationProcedure` explicitly for this design-pattern. Hence you can skip passing a function to the `x` argument of `boostr::boost` and just pass in a list of the form `list(train=someFun, predict=someOtherFun)`. If you do this, the structure of the `.procArgs` argument changes to a list of lists. See <a href="#arcx4AndSvm">this example</a> where an svm is boosted according to arc-x4, and the list-style argument to `x` is used. Note, the structure of `.procArgs` is now `list(.trainArgs=list(...), .predictArgs=list(...))` where `.trainArgs` are named arguments to pass to the `train` component of `x` and `.predictArgs` are the named components to pass to the `predict` component of `x`. See the help documention for `boostr::buildEstimationProcedure` for more information.
+
+<div id="arcx4AndSvm">
+```{r, arcx4AndSvm, cache=FALSE}
+boostr::boostWithArcX4(x = list(train = e1071::svm),
+                       B = 3,
+                       data = Glass,
+                       .procArgs = list(
+                         .trainArgs=list(
+                           formula=formula(Type~.),
+                           cost=100
+                           )
+                         )
+                       )
+```
+
+
+
+
+Reweighters
+========
+
+Motivation
+------------
+The whole idea behind Boosting is to adaptively resample observations from the learning set, and train estimators on these (weighted) samples of learning set observations. Specifically, we want to be able to take the performance of a particular estimator and the weights we used to draw the set it was trained on, and come up with new weights. The formal mechanism for doing this is a "reweighter". That is, a reweighter looks at the weights an estimator was trained on and its performance on the *original* learning set, and spits out a new set of weights, suggesting where we may want to focus more attention during the training of our next estimator. (It may return addition input, but let's not get ahead of ourselves.)
+
+Examples
+---------------
+`boostr` implements a few classic reweighters out of the box: `boostr::arcfsReweighter`, `boostr::arcx4Reweighter`, `boostr::adaboostReweighter`, and `boostr::vanillaBagger`. 
+
+```{r, cache=FALSE}
+boostr::arcx4Reweighter
+```
+
+Reweighters in `boostr`
+----------------
+You'll notice that all the implemented reweighters in `boostr` have the followign in common:
+
+1. Their signatures are of the form `(prediction, response, weights, ...)`; in this signature, `prediction` represents an estimator's prediction (vector), `response` represents the true response (comes from the learning set) and `weights` is the weight associated to the observation in `response`. Hence, all three arguments are meant to be vectors of the same length.
+2. They output named lists that contain an entry named `weights`, and
+3. They inherit from the class `reweighter`. 
+
+These are the requirements for any function to be compatible inside `boostr`. Hence, to use your own reweighter in `boostr::boost` you can either write a function from scratch that satistifies these requirements, or if you have one already pre-implemented you can let `boostr::boost` build a wrapper around it using `boostr::wrapReweighter`. This is done by passing the appropriately named arguments to `boostr::wrapReweighter` through `boostr::boost`'s `metadata` argument. See <a href="#reweighterExample">the example</a> where we Boost an svm with a (rather silly) reweighter that permutes weights.
+
+<div id="reweighterExample">
+```{r, reweighterExample, cache=FALSE}
+exoticReweighter <- function(wts, truth, preds) {
+  permutedWts <- sample(wts)
+  list(wts=permutedWts)
+}
+
+boostr::boost(x = list(train=e1071::svm), B = 3,
+              initialWeights = seq.int(nrow(Glass)),
+              reweighter = exoticReweighter,
+              aggregator = boostr::vanillaAggregator,
+              data = Glass,
+              .procArgs = list(
+                .trainArgs=list(
+                  formula=formula(Type~.),
+                  cost=100)),
+              metadata = list(
+                reweighterInputPreds="preds",
+                reweighterInputResponse="truth",
+                reweighterInputWts="wts",
+                reweighterOutputWts="wts")
+              )
+```
+</div>
+
+Aggregators
+=======
+
+Motivation
+------------
+Once we're done building all these estimators, we're going to want to get a single estimate out of them. After all, you didn't have to go through all the trouble of downloading this package if all you wanted was a cacophony of estimates. This is where aggregators come in; aggregators take your ensemble of estimators and returns a single, aggregated, estimator. 
+
+Examples
+---------------
+`boostr` implements a few classic aggregators out of the box: `boostr::arcfsAggregator`, `boostr::arcx4Aggregator`, `boostr::adaboostAggregator`, `boostr::weightedAggregator` and `boostr::vanillaAggregator`. 
+
+```{r, cache=FALSE}
+boostr::weightedAggregator
+```
+
+Aggregators in `boostr`
+------------------------
+You'll notice that all the implemented aggregators in `boostr` have the following in common:
+
+1. Their signatures have the form `(estimators, ...)`, where `estimators` represents an ensemble of estimators,
+2. They return a function of a single argument `newdata`, and
+3. They inherit from the class `aggregator`.
+
+These are the requirements for any function to be compatible inside `boostr`. Note that the `...`'s are necessary for an aggregator since `boostr::boostBackend` pipes the (named) reweighter ouput to the aggregator, so this allows aggregators to ignore irrelevant reweighter output. Like with reweighters, you can use your own aggregator by letting `boostr::boost` build a wrapper using `boostr::wrapAggregator`. See <a href="#aggregatorExample">below</a> for an example where we Boost an svm with a contrived aggregator that only considers the second estimator. Consult `boostr::wrapAggregator`'s help documentation for the details on the arguments you need to pass to `metadata` to properly wrap your aggregator. 
+
+<div id="aggregatorExample">
+```{r, aggregatorExample, cache=FALSE}
+exoticAggr <- function(ensemble, estimator) {
+  f <- ensemble[[estimator]]
+  function(newdata) f(newdata)
+}
+
+boostr::boost(x = list(train = e1071::svm), B = 3,
+              aggregator = exoticAggr,
+              reweighter = boostr::arcfsReweighter,
+              data = Glass,
+              .procArgs = list(
+                .trainArgs=list(
+                  formula=formula(Type~.),
+                  cost=100)),
+              metadata = list(.inputEnsemble = "ensemble"),
+              .boostBackendArgs = list(
+                .aggregatorArgs = list(estimator = 2))
+              )
+```
+</div>
+Performance Analyzers
+=======
+The idea of a performance analyzer isn't really specific to boosting, or estimation, for that matter. These functions are just routines called once a new estimator has been trained to calculate some performance statistics of the estimator. The default performance analyzer is `boostr::defaultOOBPerformanceAnalysis` which calculates the out-of-bag performance of an estimator.
+
+```{r, cache=FALSE}
+boostr::defaultOOBPerformanceAnalysis
+```
+
+The only requirements that a `boostr` compatible performance analyzer meet is that
+
+1. Its signature include arguments `prediction`, `response`, and `oobObs`, and
+2. It inherits from the `performanceAnalyzer` class.
+
+Any of its output is (appropriately) organized in the `estimatorPerformance` atrribute of the `boostr` object returned from `boostr::boost`. To pass any additional arguments to a performance analyzer, put `.analyzePerformanceArgs = list(...)` inside the `.boostBackendArgs` args of `boostr::boost`.
+
+<!-- update wrapPero... -->

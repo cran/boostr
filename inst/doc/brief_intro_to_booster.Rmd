@@ -1,0 +1,61 @@
+---
+title: 'A brief introduction to `boostr`'
+author: <a href="steven@pollackphoto.net">Steven Pollack</a> 
+date: May 16, 2014
+output: 
+  html_document:
+    toc: no
+    theme: spacelab
+---
+<!--
+%\VignetteEngine{knitr::knitr}
+%\VignetteIndexEntry{Introduction} 
+-->
+What is `boostr`? In brief, `boostr` was designed to be a software "laboratory" of sorts. This package is primarily meant to help you tinker with and evaluate your (boosting) algorithms. In a sense, `boostr` is here to let you explore and refine.
+
+What is `boostr` *not*? `boostr` is not here to design algorithms / boosting procedures for you. As far as I know, no software can do that (yet). If you don't have an algorithm to play with, but still are interested in this package: don't worry! In addition to letting you bagg your favorite estimators, `boostr` implements three classical boosting algorithms, with the freedom to mix and match aggregators and reweighters, provided the pair are compatible. For a more thorough look at the various user input in the `boostr` framework check out <a href="boostr_user_inputs.html">this vignette</a>.
+
+Since this is meant to be a "dive right in" kind of vignette, I'm going to assume you are cursorily familiar with the principle behind boosting. In particular, I'm assuming you've seen one of the classic boosting algoritms like "AdaBoost", and have a feel for how boosting might be generalized. If you don't, check out <a href="final_paper.pdf">the paper</a> behind `boostr`. The paper may feel a bit math-y but I promise it's a pretty easy read.
+
+Diving right in
+=================
+Let's say you wanted to boost an svm according to the arc-x4 boosting algorithm.
+Well, good news: `boostr` implements this algorithm for you with the `boostWithArcX4` function.
+```{r, cache=FALSE}
+library(mlbench)
+data(Glass)
+set.seed(1234)
+boostedSVM1 <- 
+boostr::boostWithArcX4(x = list(train = e1071::svm),
+                       B = 3,
+                       data = Glass,
+                       .procArgs = list(
+                         .trainArgs=list(
+                           formula=formula(Type~.),
+                           cost=100)))
+
+boostedSVM1
+```
+In `boostr` lists are the de-facto data-handlers. So to make sure the `boostr` interface, `boostr::boost`, passing the right information to other functions, make sure you encapsulate things in named lists. In the example above, we want to make sure our svm received the arguments `formula=formula(Type~.)` and `cost=100` so we put them in a named list, called `.trainArgs`, and put *that* in a named list called `.procArgs`. The naming convention in `boostr` may seem a bit odd, but the rationale is a list named `.xyzArgs` will pass its named arguments to the `xyz` variable in the encapsulating list or function. Hence, our procedure `x` is a list with named entry `train`, so we use `.trainArgs`, in `.procArgs` to pass arguments to the `train` component of `proc` (`x`). Since this may seem a bit weird, let's look at this exact same situation, but without the convenience function:
+```{r, cache=FALSE}
+set.seed(1234)
+boostedSVM2 <-
+boostr::boost(x = list(train=e1071::svm),
+              B = 3,
+              reweighter = boostr::arcx4Reweighter,
+              aggregator = boostr::arcx4Aggregator,
+              data = Glass,
+              .procArgs = list(
+                .trainArgs=list(
+                  formula=formula(Type~.),
+                  cost=100)),
+              .boostBackendArgs = list(
+                .reweighterArgs=list(m=0)))
+
+boostedSVM2
+
+identical(boostr::reweighterOutput(boostedSVM1),
+          boostr::reweighterOutput(boostedSVM2))
+```
+
+But this was micky mouse-type stuff: `boostr` already implemented this algorithm for you. What's really cool about `boostr` isn't the implemented algorithms, its the total modularity. Check out doc for `boostr::boost` (the package interface) and the  <a href="boostr_user_inputs.html">extended vignette</a> for more information.
